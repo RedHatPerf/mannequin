@@ -24,4 +24,5 @@ echo "---> Installing application source..."
 cp -Rf /tmp/src/. ./
 
 echo "---> Building application from source..."
+. /opt/rh/rh-maven35/enable
 mvn install
