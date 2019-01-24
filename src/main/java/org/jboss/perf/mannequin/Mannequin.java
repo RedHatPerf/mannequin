@@ -22,15 +22,19 @@ public class Mannequin extends AbstractVerticle {
 
    private static final Logger log = LoggerFactory.getLogger(Mannequin.class);
 
-   private int port = Integer.getInteger("mannequin.port", 8080);
+   private static final int PORT = Integer.getInteger("mannequin.port", 8080);
+   private static final String NAME;
+
    private static LongAdder inflight = new LongAdder();
+
+   static {
+      String name = System.getenv("NAME");
+      NAME = name == null ? "<unknown>" : name;
+   }
 
    @Override
    public void start(Future<Void> startFuture) {
       Router router = Router.router(vertx);
-      router.route(HttpMethod.GET, "/inflight").handler(ctx -> {
-         ctx.response().end(inflight.longValue() + "\n");
-      });
       router.route(HttpMethod.GET, "/").handler(ctx -> {
          HttpServerResponse response = ctx.response();
          response.putHeader(HttpHeaderNames.SERVER, "Vert.x");
@@ -40,6 +44,7 @@ public class Mannequin extends AbstractVerticle {
          HttpServerResponse response = ctx.response();
          response.setStatusCode(HttpResponseStatus.OK.code()).end(ctx.getBody());
       });
+      router.route(HttpMethod.GET, "/name").handler(ctx -> ctx.response().end(NAME + "\n"));
       // Adjust worker pool size using -Dvertx.options.workerPoolSize=xxx
       // See https://en.wikipedia.org/wiki/Lucas%E2%80%93Lehmer_primality_test
       router.route(HttpMethod.GET, "/mersenneprime").handler(ctx -> {
@@ -71,9 +76,13 @@ public class Mannequin extends AbstractVerticle {
             ctx.response().setStatusCode(400).end();
          }
       });
-      vertx.createHttpServer().requestHandler(router::handle).listen(port, result -> {
+      router.route(HttpMethod.GET, "/inflight").handler(ctx -> {
+         ctx.response().end(inflight.longValue() + "\n");
+      });
+
+      vertx.createHttpServer().requestHandler(router::handle).listen(PORT, result -> {
          if (result.failed()) {
-            System.err.printf("Cannot listen on port %d%n", port);
+            System.err.printf("Cannot listen on port %d%n", PORT);
             vertx.close();
          } else {
             HttpServer server = result.result();
