@@ -58,6 +58,7 @@ public class Mannequin extends AbstractVerticle {
       router.route(HttpMethod.GET, "/proxy").handler(this::handleProxy);
       router.route(HttpMethod.POST, "/proxy").handler(BodyHandler.create()).handler(this::handleProxy);
       router.route(HttpMethod.PUT, "/proxy").handler(BodyHandler.create()).handler(this::handleProxy);
+      router.route(HttpMethod.GET, "/env").handler(this::handleEnv);
 
       vertx.createHttpServer().requestHandler(router::handle).listen(PORT, result -> {
          if (result.failed()) {
@@ -167,5 +168,14 @@ public class Mannequin extends AbstractVerticle {
          return null;
       }
       return url;
+   }
+
+   private void handleEnv(RoutingContext ctx) {
+      StringBuilder sb = new StringBuilder();
+      for (String var : ctx.queryParam("var")) {
+         String value = System.getenv(var);
+         sb.append(var).append(": ").append(value == null ? "<undefined>" : value).append('\n');
+      }
+      ctx.response().end(sb.toString());
    }
 }
