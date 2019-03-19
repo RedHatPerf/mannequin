@@ -134,10 +134,15 @@ public class Mannequin extends AbstractVerticle {
             myResponse.headers().add(header.getKey(), header.getValue());
          }
          myResponse.headers().add(X_PROXIED_BY, NAME);
+         Buffer body = result.result().body();
          myResponse
                .setStatusCode(result.result().statusCode())
-               .setStatusMessage(result.result().statusMessage())
-               .end(result.result().body());
+               .setStatusMessage(result.result().statusMessage());
+         if (body != null) {
+            myResponse.end(body);
+         } else {
+            myResponse.end();
+         }
       } else {
          myResponse.setStatusCode(HttpResponseStatus.INTERNAL_SERVER_ERROR.code())
                .end(result.cause().toString());
