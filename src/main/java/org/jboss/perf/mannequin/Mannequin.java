@@ -123,13 +123,17 @@ public class Mannequin extends AbstractVerticle {
       List<String> urls = ctx.queryParam("url");
       URL url = validateUrl(ctx, urls);
       if (url == null) return;
-      HttpRequest<Buffer> request = client.request(ctx.request().method(), url.getPort() < 0 ? url.getDefaultPort() :url.getPort(), url.getHost(), urls.get(0));
+      int port = url.getPort() < 0 ? url.getDefaultPort() : url.getPort();
+      log.trace("Proxying {} call to {}:{} {}", ctx.request().method(), url.getHost(), port, urls.get(0));
+      HttpRequest<Buffer> request = client.request(ctx.request().method(), port, url.getHost(), urls.get(0));
       copyRequestHeaders(ctx.request().headers(), request.headers());
       request.sendBuffer(ctx.getBody(), result -> handleReply(result, ctx.response()));
    }
 
    private void handleReply(AsyncResult<HttpResponse<Buffer>> result, HttpServerResponse myResponse) {
       if (result.succeeded()) {
+         log.trace("Proxy call returned {}: ", result.result().statusCode(), result.result().statusMessage());
+
          for (Map.Entry<String, String> header : result.result().headers()) {
             myResponse.headers().add(header.getKey(), header.getValue());
          }
@@ -144,6 +148,7 @@ public class Mannequin extends AbstractVerticle {
             myResponse.end();
          }
       } else {
+         log.trace("Proxy call failed", result.cause());
          myResponse.setStatusCode(HttpResponseStatus.INTERNAL_SERVER_ERROR.code())
                .end(result.cause().toString());
       }
