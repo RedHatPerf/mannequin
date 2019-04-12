@@ -18,6 +18,7 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
+import io.vertx.core.net.NetServer;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.client.HttpRequest;
@@ -29,7 +30,8 @@ import io.vertx.ext.web.handler.BodyHandler;
 public class Mannequin extends AbstractVerticle {
    private static final Logger log = LoggerFactory.getLogger(Mannequin.class);
 
-   private static final int PORT = Integer.getInteger("mannequin.port", 8080);
+   private static final int HTTP_PORT = Integer.getInteger("mannequin.port", 8080);
+   private static final int NET_PORT = Integer.getInteger("mannequin.netPort",5432);
    private static final String NAME;
    public static final String X_PROXIED_BY = "x-proxied-by";
 
@@ -37,6 +39,7 @@ public class Mannequin extends AbstractVerticle {
    private static BusyThreads busyThreads = new BusyThreads();
 
    private WebClient client;
+   private Buffer savedBuffer;
 
    static {
       String name = System.getenv("NAME");
@@ -46,6 +49,11 @@ public class Mannequin extends AbstractVerticle {
    @Override
    public void start(Future<Void> startFuture) {
       client = WebClient.create(vertx, new WebClientOptions().setFollowRedirects(false));
+
+      savedBuffer = Buffer.buffer(10000);
+      for(int i=0; i<10_000; i++) {
+         savedBuffer.appendInt(i);
+      }
 
       Router router = Router.router(vertx);
       router.route(HttpMethod.GET, "/").handler(this::handleRootGet);
@@ -60,17 +68,36 @@ public class Mannequin extends AbstractVerticle {
       router.route(HttpMethod.PUT, "/proxy").handler(BodyHandler.create()).handler(this::handleProxy);
       router.route(HttpMethod.GET, "/env").handler(this::handleEnv);
 
-      vertx.createHttpServer().requestHandler(router::handle).listen(PORT, result -> {
+
+      vertx.createHttpServer().requestHandler(router::handle).listen(HTTP_PORT, result -> {
          if (result.failed()) {
-            System.err.printf("Cannot listen on port %d%n", PORT);
+            System.err.printf("Cannot listen on port %d%n", HTTP_PORT);
             vertx.close();
          } else {
             HttpServer server = result.result();
-            System.out.printf("Mannequin listening on port %d%n", server.actualPort());
+            System.out.printf("Mannequin http server listening on port %d%n", server.actualPort());
+         }
+      });
+      vertx.createNetServer().connectHandler(netSocket->{
+         netSocket.handler(buffer->{
+            System.out.println(savedBuffer.length());
+            netSocket.write(savedBuffer);
+         });
+      }).listen(NET_PORT,result->{
+         if(result.failed()){
+            System.err.printf("Cannot listen on port %d%n",NET_PORT);
+            vertx.close();
+         }else{
+            NetServer server = result.result();
+            System.out.printf("Mannequin net server listening on port %d%n",server.actualPort());
          }
       });
    }
 
+   private void handleBuffer(Buffer buffer){
+      String input = buffer.getString(0,buffer.length());
+
+   }
    private void handleRootGet(RoutingContext ctx) {
       HttpServerResponse response = ctx.response();
       response.putHeader(HttpHeaderNames.SERVER, "Vert.x");
