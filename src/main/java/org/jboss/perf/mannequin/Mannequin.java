@@ -80,7 +80,6 @@ public class Mannequin extends AbstractVerticle {
       });
       vertx.createNetServer().connectHandler(netSocket->{
          netSocket.handler(buffer->{
-            System.out.println(savedBuffer.length());
             netSocket.write(savedBuffer);
          });
       }).listen(NET_PORT,result->{
