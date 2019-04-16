@@ -18,7 +18,9 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
+import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetServer;
+import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.client.HttpRequest;
@@ -39,6 +41,7 @@ public class Mannequin extends AbstractVerticle {
    private static BusyThreads busyThreads = new BusyThreads();
 
    private WebClient client;
+   private NetClient tcpClient;
    private Buffer savedBuffer;
 
    static {
@@ -49,6 +52,7 @@ public class Mannequin extends AbstractVerticle {
    @Override
    public void start(Future<Void> startFuture) {
       client = WebClient.create(vertx, new WebClientOptions().setFollowRedirects(false));
+      tcpClient = vertx.createNetClient();
 
       savedBuffer = Buffer.buffer(10000);
       for(int i=0; i<10_000; i++) {
@@ -67,6 +71,7 @@ public class Mannequin extends AbstractVerticle {
       router.route(HttpMethod.POST, "/proxy").handler(BodyHandler.create()).handler(this::handleProxy);
       router.route(HttpMethod.PUT, "/proxy").handler(BodyHandler.create()).handler(this::handleProxy);
       router.route(HttpMethod.GET, "/env").handler(this::handleEnv);
+      router.route(HttpMethod.GET,"/db").handler(this::handleDb);
 
 
       vertx.createHttpServer().requestHandler(router::handle).listen(HTTP_PORT, result -> {
@@ -80,7 +85,10 @@ public class Mannequin extends AbstractVerticle {
       });
       vertx.createNetServer().connectHandler(netSocket->{
          netSocket.handler(buffer->{
-            netSocket.write(savedBuffer);
+            int limit = buffer.length();
+            for(int i=0; i < limit; i++){
+               netSocket.write(savedBuffer);
+            }
          });
       }).listen(NET_PORT,result->{
          if(result.failed()){
@@ -96,6 +104,44 @@ public class Mannequin extends AbstractVerticle {
    private void handleBuffer(Buffer buffer){
       String input = buffer.getString(0,buffer.length());
 
+   }
+   private String getString(String param,RoutingContext ctx,String defaultValue){
+      String rtrn = defaultValue;
+      List<String> values = ctx.queryParam(param);
+      if(values != null && values.size()>0){
+         rtrn = values.get(0);
+      }
+      return rtrn;
+   }
+   private int getInt(String param,RoutingContext ctx,int defaultValue){
+      int rtrn = defaultValue;
+      List<String> values = ctx.queryParam(param);
+      if(values != null && values.size()>0){
+         try {
+            rtrn = Integer.parseInt(values.get(0));
+         }catch(NumberFormatException e){
+            log.trace("Invalid {}: {} is not a number", param,values.get(0));
+
+         }
+      }
+      return rtrn;
+   }
+   private void handleDb(RoutingContext ctx){
+      int size = getInt("size",ctx,10);
+      String host = getString("host",ctx,"localhost");
+      int port = getInt("port",ctx,5432);
+      long expected = savedBuffer.length() * size;
+      LongAdder adder = new LongAdder();
+      tcpClient.connect(port,host,(result)->{
+         NetSocket netSocket = result.result();
+         netSocket.handler((buffer)->{
+            adder.add(buffer.length());
+            if(adder.longValue() >= expected){
+               ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":"+size+",\"received\":"+adder.longValue()+"}");
+            }
+         });
+         netSocket.write(Buffer.buffer(new byte[size]));
+      });
    }
    private void handleRootGet(RoutingContext ctx) {
       HttpServerResponse response = ctx.response();
@@ -148,7 +194,10 @@ public class Mannequin extends AbstractVerticle {
    private void handleProxy(RoutingContext ctx) {
       List<String> urls = ctx.queryParam("url");
       URL url = validateUrl(ctx, urls);
-      if (url == null) return;
+      if (url == null) {
+
+         return;
+      }
       int port = url.getPort() < 0 ? url.getDefaultPort() : url.getPort();
       log.trace("Proxying {} call to {}:{} {}", ctx.request().method(), url.getHost(), port, urls.get(0));
       HttpRequest<Buffer> request = client.request(ctx.request().method(), port, url.getHost(), urls.get(0));
@@ -198,6 +247,7 @@ public class Mannequin extends AbstractVerticle {
       try {
          url = new URL(urls.get(0));
       } catch (MalformedURLException e) {
+         log.error("Error parsing {}\n  {}",urls.get(0),e.getMessage());
          ctx.response()
                .setStatusCode(HttpResponseStatus.BAD_REQUEST.code())
                .setStatusMessage("Invalid URL").end();
