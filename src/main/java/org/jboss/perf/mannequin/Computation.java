@@ -22,7 +22,7 @@ public class Computation {
       objectBuilder.add("M",M);
       for (int i = 0; i < p - 2; ++i) {
          s = s.multiply(s).add(MINUS_TWO).mod(M);
-         arrayBuilder.add(s);
+         arrayBuilder.add(s.toString());
       }
       //to ensure responses cannot be memoized
       objectBuilder.add("stopMillis", System.currentTimeMillis());

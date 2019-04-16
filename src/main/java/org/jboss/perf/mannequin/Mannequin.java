@@ -5,6 +5,7 @@ import java.net.URL;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Consumer;
 
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
@@ -101,10 +102,6 @@ public class Mannequin extends AbstractVerticle {
       });
    }
 
-   private void handleBuffer(Buffer buffer){
-      String input = buffer.getString(0,buffer.length());
-
-   }
    private String getString(String param,RoutingContext ctx,String defaultValue){
       String rtrn = defaultValue;
       List<String> values = ctx.queryParam(param);
@@ -142,6 +139,7 @@ public class Mannequin extends AbstractVerticle {
          });
          netSocket.write(Buffer.buffer(new byte[size]));
       });
+      ignoreMersennePrime(ctx);
    }
    private void handleRootGet(RoutingContext ctx) {
       HttpServerResponse response = ctx.response();
@@ -154,20 +152,37 @@ public class Mannequin extends AbstractVerticle {
       response.setStatusCode(HttpResponseStatus.OK.code()).end(ctx.getBody());
    }
 
+   private void executeMersennePrime(int number, Consumer<String> callback){
+         inflight.increment();
+         vertx.executeBlocking(future -> future.complete(Computation.isMersennePrime(number)), false, result -> {
+            inflight.decrement();
+            if(callback!=null) {
+               callback.accept(String.valueOf(result.result()));
+            }
+         });
+   }
+   private void ignoreMersennePrime(RoutingContext ctx){
+      String pStr = ctx.request().getParam("p");
+      int p;
+      try {
+         p = Integer.parseInt(pStr);
+         executeMersennePrime(p,null);
+      }catch (NumberFormatException e){
+         log.error("{} failed to parse number from {}",ctx.request().uri(),pStr);
+      }
+   }
    private void handleMersennePrime(RoutingContext ctx) {
       String pStr = ctx.request().getParam("p");
       int p;
       try {
          p = Integer.parseInt(pStr);
-         inflight.increment();
-         vertx.executeBlocking(future -> future.complete(Computation.isMersennePrime(p)), false, result -> {
-            inflight.decrement();
+         executeMersennePrime(p,result->{
             if (ctx.response().ended()) {
                // connection has been closed before we calculated the result
                return;
             }
-            if (result.succeeded()) {
-               ctx.response().end(String.valueOf(result.result()));
+            if (result != null && result.length()>0) {
+               ctx.response().end(result);
             } else {
                ctx.response().setStatusCode(HttpResponseStatus.INTERNAL_SERVER_ERROR.code()).end();
             }
@@ -198,11 +213,13 @@ public class Mannequin extends AbstractVerticle {
 
          return;
       }
+
       int port = url.getPort() < 0 ? url.getDefaultPort() : url.getPort();
       log.trace("Proxying {} call to {}:{} {}", ctx.request().method(), url.getHost(), port, urls.get(0));
       HttpRequest<Buffer> request = client.request(ctx.request().method(), port, url.getHost(), urls.get(0));
       copyRequestHeaders(ctx.request().headers(), request.headers());
       request.sendBuffer(ctx.getBody(), result -> handleReply(result, ctx.response()));
+      ignoreMersennePrime(ctx);
    }
 
    private void handleReply(AsyncResult<HttpResponse<Buffer>> result, HttpServerResponse myResponse) {
