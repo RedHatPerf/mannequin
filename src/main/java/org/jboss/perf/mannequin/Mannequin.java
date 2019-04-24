@@ -2,6 +2,8 @@ package org.jboss.perf.mannequin;
 
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.LongAdder;
@@ -72,7 +74,8 @@ public class Mannequin extends AbstractVerticle {
       router.route(HttpMethod.POST, "/proxy").handler(BodyHandler.create()).handler(this::handleProxy);
       router.route(HttpMethod.PUT, "/proxy").handler(BodyHandler.create()).handler(this::handleProxy);
       router.route(HttpMethod.GET, "/env").handler(this::handleEnv);
-      router.route(HttpMethod.GET,"/db").handler(this::handleDb);
+      router.route(HttpMethod.GET, "/db").handler(this::handleDb);
+      router.route(HttpMethod.POST, "/printrequest").handler(BodyHandler.create()).handler(this::handlePrintRequest);
 
 
       vertx.createHttpServer().requestHandler(router::handle).listen(HTTP_PORT, result -> {
@@ -100,6 +103,17 @@ public class Mannequin extends AbstractVerticle {
             System.out.printf("Mannequin net server listening on port %d%n",server.actualPort());
          }
       });
+   }
+
+   private synchronized void handlePrintRequest(RoutingContext ctx) {
+      SimpleDateFormat format = new SimpleDateFormat("HH:mm:ss.S");
+      System.out.printf("%s request from %s to %s%n", format.format(new Date()), ctx.request().remoteAddress(), ctx.request().uri());
+      for (Map.Entry<String, String> header : ctx.request().headers()) {
+         System.out.printf("%s: %s%n", header.getKey(), header.getValue());
+      }
+      System.out.println();
+      System.out.println(ctx.getBodyAsString());
+      ctx.response().end();
    }
 
    private String getString(String param,RoutingContext ctx,String defaultValue){
