@@ -147,20 +147,24 @@ public class Mannequin extends AbstractVerticle {
       AtomicLong adder = new AtomicLong();
       tcpClient.connect(port, host, result -> {
          if (result.failed()) {
+            log.trace("Connection failed", result.cause());
             ctx.response().setStatusCode(504).setStatusMessage(result.cause().toString()).end();
             return;
          }
+         log.trace("Connection succeeded");
          long timerId = vertx.setTimer(15_000, timer -> {
             if (!ctx.response().ended()) {
-               ctx.response().setStatusCode(504).end();
+               ctx.response().setStatusCode(504).setStatusMessage("Received " + adder.longValue() + "/" + expected).end();
             }
          });
          NetSocket netSocket = result.result();
          netSocket.handler((buffer) -> {
-            adder.addAndGet(buffer.length());
-            if (adder.longValue() >= expected) {
+            long total = adder.addAndGet(buffer.length());
+            log.trace("Received {} bytes ({} total) from TCP socket", buffer.length(), total);
+            if (total >= expected) {
                executeMersennePrime(ctx, ignored -> {
                   vertx.cancelTimer(timerId);
+                  log.trace("Completing request");
                   ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":" + size + ",\"received\":" + adder.longValue() + "}");
                });
             }
