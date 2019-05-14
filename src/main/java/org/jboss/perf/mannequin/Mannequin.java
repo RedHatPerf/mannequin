@@ -148,13 +148,13 @@ public class Mannequin extends AbstractVerticle {
       tcpClient.connect(port, host, result -> {
          if (result.failed()) {
             log.trace("Connection failed", result.cause());
-            ctx.response().setStatusCode(504).setStatusMessage(result.cause().toString()).end();
+            ctx.response().setStatusCode(504).end(result.cause().toString());
             return;
          }
          log.trace("Connection succeeded");
          long timerId = vertx.setTimer(15_000, timer -> {
             if (!ctx.response().ended()) {
-               ctx.response().setStatusCode(504).setStatusMessage("Received " + adder.longValue() + "/" + expected).end();
+               ctx.response().setStatusCode(504).end("Received " + adder.longValue() + "/" + expected);
             }
          });
          NetSocket netSocket = result.result();
@@ -254,7 +254,7 @@ public class Mannequin extends AbstractVerticle {
 
       int port = url.getPort() < 0 ? url.getDefaultPort() : url.getPort();
       log.trace("Proxying {} call to {}:{} {}", ctx.request().method(), url.getHost(), port, urls.get(0));
-      HttpRequest<Buffer> request = client.request(ctx.request().method(), port, url.getHost(), urls.get(0));
+      HttpRequest<Buffer> request = client.request(ctx.request().method(), port, url.getHost(), url.getFile());
       copyRequestHeaders(ctx.request().headers(), request.headers());
       request.sendBuffer(ctx.getBody(), result -> handleReply(result, ctx));
    }
