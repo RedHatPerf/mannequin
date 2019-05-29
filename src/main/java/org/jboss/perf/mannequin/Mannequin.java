@@ -20,6 +20,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 import io.vertx.core.net.NetClient;
@@ -40,12 +41,22 @@ public class Mannequin extends AbstractVerticle {
    private static final int HTTP_PORT = Integer.getInteger("mannequin.port", 8080);
    private static final int NET_PORT = Integer.getInteger("mannequin.netPort",5432);
    private static final String NAME;
-   public static final String X_PROXIED_BY = "x-proxied-by";
+   private static final String X_PROXIED_BY = "x-proxied-by";
+   private static final String X_PROXY_SERVICE_TIME = "x-proxy-service-time";
+   private static final String X_DB_SERVICE_TIME = "x-db-service-time";
+   private static final int MAX_CONNECTIONS = getIntFromEnv("MAX_CONNECTIONS", 20);
+
+   private static int getIntFromEnv(String var, int def) {
+      String env = System.getenv(var);
+      if (env == null || env.isEmpty()) return def;
+      return Integer.parseInt(env);
+   }
 
    private static LongAdder inflight = new LongAdder();
    private static BusyThreads busyThreads = new BusyThreads();
 
-   private WebClient client;
+   private WebClient http1xClient;
+   private WebClient http2Client;
    private NetClient tcpClient;
    private Buffer savedBuffer;
 
@@ -56,7 +67,9 @@ public class Mannequin extends AbstractVerticle {
 
    @Override
    public void start(Future<Void> startFuture) {
-      client = WebClient.create(vertx, new WebClientOptions().setFollowRedirects(false));
+      WebClientOptions options = new WebClientOptions().setFollowRedirects(false).setMaxPoolSize(MAX_CONNECTIONS);
+      http1xClient = WebClient.create(vertx, new WebClientOptions(options).setProtocolVersion(HttpVersion.HTTP_1_1));
+      http2Client = WebClient.create(vertx, new WebClientOptions(options).setProtocolVersion(HttpVersion.HTTP_2));
       tcpClient = vertx.createNetClient();
 
       savedBuffer = Buffer.buffer(10000);
@@ -178,7 +191,7 @@ public class Mannequin extends AbstractVerticle {
             if (total >= expected) {
                netSocket.close();
                long endTime = System.nanoTime();
-               ctx.response().putHeader("x-db-service-time", String.valueOf(endTime - startTime));
+               ctx.response().putHeader(X_DB_SERVICE_TIME, String.valueOf(endTime - startTime));
                executeMersennePrime(ctx, ignored -> {
                   vertx.cancelTimer(timerId);
                   log.trace("Completing request");
@@ -264,15 +277,22 @@ public class Mannequin extends AbstractVerticle {
    }
 
    private void handleProxy(RoutingContext ctx) {
+      List<String> versionParams = ctx.queryParam("version");
+      WebClient client = this.http1xClient;
+      if (versionParams != null && !versionParams.isEmpty()) {
+         if ("http2".equals(versionParams.get(0))) {
+            client = this.http2Client;
+         }
+      }
       List<String> urls = ctx.queryParam("url");
       URL url = validateUrl(ctx, urls);
       if (url == null) {
-
          return;
       }
 
       int port = url.getPort() < 0 ? url.getDefaultPort() : url.getPort();
       log.trace("Proxying {} call to {}:{} {}", ctx.request().method(), url.getHost(), port, urls.get(0));
+
       HttpRequest<Buffer> request = client.request(ctx.request().method(), port, url.getHost(), url.getFile());
       copyRequestHeaders(ctx.request().headers(), request.headers());
       long startTime = System.nanoTime();
@@ -282,7 +302,7 @@ public class Mannequin extends AbstractVerticle {
    private void handleReply(AsyncResult<HttpResponse<Buffer>> result, RoutingContext ctx, long startTime) {
       long responseTime = System.nanoTime();
       HttpServerResponse myResponse = ctx.response();
-      myResponse.putHeader("x-proxy-service-time", String.valueOf(responseTime - startTime));
+      myResponse.putHeader(X_PROXY_SERVICE_TIME, String.valueOf(responseTime - startTime));
       if (result.succeeded()) {
          log.trace("Proxy call returned {}: ", result.result().statusCode(), result.result().statusMessage());
 
