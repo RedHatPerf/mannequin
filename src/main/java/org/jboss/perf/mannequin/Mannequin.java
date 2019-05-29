@@ -35,6 +35,7 @@ import io.vertx.ext.web.handler.BodyHandler;
 
 public class Mannequin extends AbstractVerticle {
    private static final Logger log = LoggerFactory.getLogger(Mannequin.class);
+   private static final boolean trace = log.isTraceEnabled();
 
    private static final int HTTP_PORT = Integer.getInteger("mannequin.port", 8080);
    private static final int NET_PORT = Integer.getInteger("mannequin.netPort",5432);
@@ -88,18 +89,28 @@ public class Mannequin extends AbstractVerticle {
             System.out.printf("Mannequin http server listening on port %d%n", server.actualPort());
          }
       });
-      vertx.createNetServer().connectHandler(netSocket->{
+      vertx.createNetServer().connectHandler(netSocket -> {
+         if (trace) {
+            log.trace("Incoming connection from to {}", netSocket.remoteAddress());
+            netSocket.closeHandler(nil -> log.trace("Connection from {} closed.", netSocket.remoteAddress()));
+         }
          netSocket.handler(buffer->{
+            if (trace) {
+               log.trace("{} sent {} bytes", netSocket.remoteAddress(), buffer.length());
+            }
             int limit = buffer.length();
-            for(int i=0; i < limit; i++){
+            for (int i = 0; i < limit; i++){
                netSocket.write(savedBuffer);
             }
+            if (trace) {
+               log.trace("Responded to {}", netSocket.remoteAddress());
+            }
          });
-      }).listen(NET_PORT,result->{
-         if(result.failed()){
+      }).listen(NET_PORT, result->{
+         if (result.failed()){
             System.err.printf("Cannot listen on port %d%n",NET_PORT);
             vertx.close();
-         }else{
+         } else {
             NetServer server = result.result();
             System.out.printf("Mannequin net server listening on port %d%n",server.actualPort());
          }
@@ -148,12 +159,14 @@ public class Mannequin extends AbstractVerticle {
       tcpClient.connect(port, host, result -> {
          if (result.failed()) {
             log.trace("Connection failed", result.cause());
-            ctx.response().setStatusCode(504).end(result.cause().toString());
+            if (!ctx.response().ended() && !ctx.response().closed()) {
+               ctx.response().setStatusCode(504).end(result.cause().toString());
+            }
             return;
          }
          log.trace("Connection succeeded");
          long timerId = vertx.setTimer(15_000, timer -> {
-            if (!ctx.response().ended()) {
+            if (!ctx.response().ended() && !ctx.response().closed()) {
                ctx.response().setStatusCode(504).end("Received " + adder.longValue() + "/" + expected);
             }
          });
@@ -162,10 +175,13 @@ public class Mannequin extends AbstractVerticle {
             long total = adder.addAndGet(buffer.length());
             log.trace("Received {} bytes ({} total) from TCP socket", buffer.length(), total);
             if (total >= expected) {
+               netSocket.close();
                executeMersennePrime(ctx, ignored -> {
                   vertx.cancelTimer(timerId);
                   log.trace("Completing request");
-                  ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":" + size + ",\"received\":" + adder.longValue() + "}");
+                  if (!ctx.response().ended() && !ctx.response().closed()) {
+                     ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":" + size + ",\"received\":" + adder.longValue() + "}");
+                  }
                });
             }
          });
