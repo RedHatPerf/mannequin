@@ -156,6 +156,7 @@ public class Mannequin extends AbstractVerticle {
       int port = getInt("port", ctx, 5432);
       long expected = savedBuffer.length() * size;
       AtomicLong adder = new AtomicLong();
+      long startTime = System.nanoTime();
       tcpClient.connect(port, host, result -> {
          if (result.failed()) {
             log.trace("Connection failed", result.cause());
@@ -176,6 +177,8 @@ public class Mannequin extends AbstractVerticle {
             log.trace("Received {} bytes ({} total) from TCP socket", buffer.length(), total);
             if (total >= expected) {
                netSocket.close();
+               long endTime = System.nanoTime();
+               ctx.response().putHeader("x-db-service-time", String.valueOf(endTime - startTime));
                executeMersennePrime(ctx, ignored -> {
                   vertx.cancelTimer(timerId);
                   log.trace("Completing request");
@@ -272,11 +275,14 @@ public class Mannequin extends AbstractVerticle {
       log.trace("Proxying {} call to {}:{} {}", ctx.request().method(), url.getHost(), port, urls.get(0));
       HttpRequest<Buffer> request = client.request(ctx.request().method(), port, url.getHost(), url.getFile());
       copyRequestHeaders(ctx.request().headers(), request.headers());
-      request.sendBuffer(ctx.getBody(), result -> handleReply(result, ctx));
+      long startTime = System.nanoTime();
+      request.sendBuffer(ctx.getBody(), result -> handleReply(result, ctx, startTime));
    }
 
-   private void handleReply(AsyncResult<HttpResponse<Buffer>> result, RoutingContext ctx) {
+   private void handleReply(AsyncResult<HttpResponse<Buffer>> result, RoutingContext ctx, long startTime) {
+      long responseTime = System.nanoTime();
       HttpServerResponse myResponse = ctx.response();
+      myResponse.putHeader("x-proxy-service-time", String.valueOf(responseTime - startTime));
       if (result.succeeded()) {
          log.trace("Proxy call returned {}: ", result.result().statusCode(), result.result().statusMessage());
 
@@ -290,10 +296,12 @@ public class Mannequin extends AbstractVerticle {
                .setStatusMessage(result.result().statusMessage());
 
          executeMersennePrime(ctx, ignored -> {
-            if (body != null) {
-               myResponse.end(body);
-            } else {
-               myResponse.end();
+            if (!myResponse.closed()) {
+               if (body != null) {
+                  myResponse.end(body);
+               } else {
+                  myResponse.end();
+               }
             }
          });
       } else {
