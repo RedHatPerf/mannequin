@@ -171,27 +171,31 @@ public class Mannequin extends AbstractVerticle {
       int size = getInt("size", ctx, 10);
       String host = getString("host", ctx, "localhost");
       int port = getInt("port", ctx, 5432);
+      String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
 
       String authority = host + ":" + port;
       SimplePool pool = tcpConnectionPools.computeIfAbsent(authority, a -> new SimplePool());
       NetSocket netSocket = pool.connections.poll();
       long startTime = System.nanoTime();
       if (netSocket != null) {
-         log.trace("Reusing connection {}", netSocket.localAddress());
+         log.trace("{} Reusing connection {}", userAgent, netSocket.localAddress());
          sendDbRequest(ctx, tcpConnectionPools.computeIfAbsent(authority, h -> new SimplePool()), size, startTime, netSocket);
       } else {
          pool.created++;
          tcpClient.connect(port, host, result -> {
             if (result.failed()) {
-               log.trace("Connection failed", result.cause());
+               log.trace("{} Connection failed", result.cause(), userAgent);
                if (!ctx.response().ended() && !ctx.response().closed()) {
                   ctx.response().setStatusCode(504).end(result.cause().toString());
                }
                return;
             }
-            log.trace("Connection succeeded");
+            log.trace("{} Connection succeeded", userAgent);
             NetSocket netSocket2 = result.result();
-            netSocket2.exceptionHandler(t -> netSocket2.close());
+            netSocket2.exceptionHandler(t -> {
+               log.trace("{} error", userAgent);
+               netSocket2.close();
+            });
             sendDbRequest(ctx, pool, size, startTime, netSocket2);
          });
       }
@@ -201,7 +205,8 @@ public class Mannequin extends AbstractVerticle {
       AtomicLong adder = new AtomicLong();
       long expected = savedBuffer.length() * size;
       long timerId = vertx.setTimer(15_000, timer -> {
-         log.trace("{} timed out, {}/{} bytes", netSocket.localAddress(), adder.longValue(), expected);
+         String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
+         log.trace("{} timed out, {}/{} bytes", userAgent, adder.longValue(), expected);
          if (!ctx.response().ended() && !ctx.response().closed()) {
             ctx.response().setStatusCode(504).putHeader("x-db-timeout", "true")
                   .end("Received " + adder.longValue() + "/" + expected);
@@ -221,11 +226,12 @@ public class Mannequin extends AbstractVerticle {
          if (total >= expected) {
             long endTime = System.nanoTime();
             pool.connections.push(netSocket);
-            log.trace("Released connection {}, {}/{} available", netSocket.localAddress(), pool.connections.size(), pool.created);
+            String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
+            log.trace("{} Released connection, {}/{} available", userAgent, pool.connections.size(), pool.created);
             ctx.response().putHeader(X_DB_SERVICE_TIME, String.valueOf(endTime - startTime));
             executeMersennePrime(ctx, ignored -> {
                vertx.cancelTimer(timerId);
-               log.trace("Completing request");
+               log.trace("{} Completing request", userAgent);
                if (!ctx.response().ended() && !ctx.response().closed()) {
                   ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":" + size + ",\"received\":" + adder.longValue() + "}");
                }
@@ -235,6 +241,8 @@ public class Mannequin extends AbstractVerticle {
       try {
          netSocket.write(Buffer.buffer(new byte[size]));
       } catch (Throwable t) {
+         String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
+         log.trace("{} Failed writing request", userAgent);
          // this can throw error when the connection is closed from the other party
          if (!ctx.response().ended()) {
             ctx.response().setStatusCode(504).putHeader("x-db-write-failed", "true").end("TCP connection failed.");
