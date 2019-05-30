@@ -179,20 +179,22 @@ public class Mannequin extends AbstractVerticle {
       if (netSocket != null) {
          log.trace("Reusing connection {}", netSocket.localAddress());
          sendDbRequest(ctx, tcpConnectionPools.computeIfAbsent(authority, h -> new SimplePool()), size, startTime, netSocket);
-         return;
-      }
-      pool.created++;
-      tcpClient.connect(port, host, result -> {
-         if (result.failed()) {
-            log.trace("Connection failed", result.cause());
-            if (!ctx.response().ended() && !ctx.response().closed()) {
-               ctx.response().setStatusCode(504).end(result.cause().toString());
+      } else {
+         pool.created++;
+         tcpClient.connect(port, host, result -> {
+            if (result.failed()) {
+               log.trace("Connection failed", result.cause());
+               if (!ctx.response().ended() && !ctx.response().closed()) {
+                  ctx.response().setStatusCode(504).end(result.cause().toString());
+               }
+               return;
             }
-            return;
-         }
-         log.trace("Connection succeeded");
-         sendDbRequest(ctx, pool, size, startTime, result.result());
-      });
+            log.trace("Connection succeeded");
+            NetSocket netSocket2 = result.result();
+            netSocket2.exceptionHandler(t -> netSocket2.close());
+            sendDbRequest(ctx, pool, size, startTime, netSocket2);
+         });
+      }
    }
 
    private void sendDbRequest(RoutingContext ctx, SimplePool pool, int size, long startTime, NetSocket netSocket) {
@@ -201,10 +203,17 @@ public class Mannequin extends AbstractVerticle {
       long timerId = vertx.setTimer(15_000, timer -> {
          log.trace("{} timed out, {}/{} bytes", netSocket.localAddress(), adder.longValue(), expected);
          if (!ctx.response().ended() && !ctx.response().closed()) {
-            ctx.response().setStatusCode(504).end("Received " + adder.longValue() + "/" + expected);
+            ctx.response().setStatusCode(504).putHeader("x-db-timeout", "true")
+                  .end("Received " + adder.longValue() + "/" + expected);
          }
          netSocket.close();
+      });
+      netSocket.closeHandler(nil -> {
          pool.created--;
+         if (!ctx.response().closed()) {
+            ctx.response().setStatusCode(504).putHeader("x-db-closed", "true")
+                  .end("TCP connection closed.");
+         }
       });
       netSocket.handler(buffer -> {
          long total = adder.addAndGet(buffer.length());
@@ -223,7 +232,14 @@ public class Mannequin extends AbstractVerticle {
             });
          }
       });
-      netSocket.write(Buffer.buffer(new byte[size]));
+      try {
+         netSocket.write(Buffer.buffer(new byte[size]));
+      } catch (Throwable t) {
+         // this can throw error when the connection is closed from the other party
+         if (!ctx.response().ended()) {
+            ctx.response().setStatusCode(504).putHeader("x-db-write-failed", "true").end("TCP connection failed.");
+         }
+      }
    }
 
    private void handleRootGet(RoutingContext ctx) {
@@ -268,7 +284,7 @@ public class Mannequin extends AbstractVerticle {
       try {
          p = Integer.parseInt(pStr);
          executeMersennePrime(p,result->{
-            if (ctx.response().ended()) {
+            if (ctx.response().closed()) {
                // connection has been closed before we calculated the result
                return;
             }
