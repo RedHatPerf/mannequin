@@ -179,12 +179,13 @@ public class Mannequin extends AbstractVerticle {
             return;
          }
          log.trace("Connection succeeded");
+         NetSocket netSocket = result.result();
          long timerId = vertx.setTimer(15_000, timer -> {
             if (!ctx.response().ended() && !ctx.response().closed()) {
                ctx.response().setStatusCode(504).end("Received " + adder.longValue() + "/" + expected);
             }
+            netSocket.close();
          });
-         NetSocket netSocket = result.result();
          netSocket.handler((buffer) -> {
             long total = adder.addAndGet(buffer.length());
             log.trace("Received {} bytes ({} total) from TCP socket", buffer.length(), total);
