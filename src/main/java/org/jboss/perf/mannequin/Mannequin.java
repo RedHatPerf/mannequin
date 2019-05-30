@@ -3,7 +3,10 @@ package org.jboss.perf.mannequin;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.Date;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -58,6 +61,7 @@ public class Mannequin extends AbstractVerticle {
    private WebClient http1xClient;
    private WebClient http2Client;
    private NetClient tcpClient;
+   private Map<String, SimplePool> tcpConnectionPools = new HashMap<>();
    private Buffer savedBuffer;
 
    static {
@@ -167,9 +171,17 @@ public class Mannequin extends AbstractVerticle {
       int size = getInt("size", ctx, 10);
       String host = getString("host", ctx, "localhost");
       int port = getInt("port", ctx, 5432);
-      long expected = savedBuffer.length() * size;
-      AtomicLong adder = new AtomicLong();
+
+      String authority = host + ":" + port;
+      SimplePool pool = tcpConnectionPools.computeIfAbsent(authority, a -> new SimplePool());
+      NetSocket netSocket = pool.connections.poll();
       long startTime = System.nanoTime();
+      if (netSocket != null) {
+         log.trace("Reusing connection {}", netSocket.localAddress());
+         sendDbRequest(ctx, tcpConnectionPools.computeIfAbsent(authority, h -> new SimplePool()), size, startTime, netSocket);
+         return;
+      }
+      pool.created++;
       tcpClient.connect(port, host, result -> {
          if (result.failed()) {
             log.trace("Connection failed", result.cause());
@@ -179,31 +191,39 @@ public class Mannequin extends AbstractVerticle {
             return;
          }
          log.trace("Connection succeeded");
-         NetSocket netSocket = result.result();
-         long timerId = vertx.setTimer(15_000, timer -> {
-            if (!ctx.response().ended() && !ctx.response().closed()) {
-               ctx.response().setStatusCode(504).end("Received " + adder.longValue() + "/" + expected);
-            }
-            netSocket.close();
-         });
-         netSocket.handler((buffer) -> {
-            long total = adder.addAndGet(buffer.length());
-            log.trace("Received {} bytes ({} total) from TCP socket", buffer.length(), total);
-            if (total >= expected) {
-               netSocket.close();
-               long endTime = System.nanoTime();
-               ctx.response().putHeader(X_DB_SERVICE_TIME, String.valueOf(endTime - startTime));
-               executeMersennePrime(ctx, ignored -> {
-                  vertx.cancelTimer(timerId);
-                  log.trace("Completing request");
-                  if (!ctx.response().ended() && !ctx.response().closed()) {
-                     ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":" + size + ",\"received\":" + adder.longValue() + "}");
-                  }
-               });
-            }
-         });
-         netSocket.write(Buffer.buffer(new byte[size]));
+         sendDbRequest(ctx, pool, size, startTime, result.result());
       });
+   }
+
+   private void sendDbRequest(RoutingContext ctx, SimplePool pool, int size, long startTime, NetSocket netSocket) {
+      AtomicLong adder = new AtomicLong();
+      long expected = savedBuffer.length() * size;
+      long timerId = vertx.setTimer(15_000, timer -> {
+         log.trace("{} timed out, {}/{} bytes", netSocket.localAddress(), adder.longValue(), expected);
+         if (!ctx.response().ended() && !ctx.response().closed()) {
+            ctx.response().setStatusCode(504).end("Received " + adder.longValue() + "/" + expected);
+         }
+         netSocket.close();
+         pool.created--;
+      });
+      netSocket.handler(buffer -> {
+         long total = adder.addAndGet(buffer.length());
+         log.trace("Received {} bytes ({} total) from TCP socket", buffer.length(), total);
+         if (total >= expected) {
+            long endTime = System.nanoTime();
+            pool.connections.push(netSocket);
+            log.trace("Released connection {}, {}/{} available", netSocket.localAddress(), pool.connections.size(), pool.created);
+            ctx.response().putHeader(X_DB_SERVICE_TIME, String.valueOf(endTime - startTime));
+            executeMersennePrime(ctx, ignored -> {
+               vertx.cancelTimer(timerId);
+               log.trace("Completing request");
+               if (!ctx.response().ended() && !ctx.response().closed()) {
+                  ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":" + size + ",\"received\":" + adder.longValue() + "}");
+               }
+            });
+         }
+      });
+      netSocket.write(Buffer.buffer(new byte[size]));
    }
 
    private void handleRootGet(RoutingContext ctx) {
@@ -366,5 +386,10 @@ public class Mannequin extends AbstractVerticle {
          sb.append(var).append(": ").append(value == null ? "<undefined>" : value).append('\n');
       }
       ctx.response().end(sb.toString());
+   }
+
+   private static class SimplePool {
+      int created;
+      Deque<NetSocket> connections = new ArrayDeque<>();
    }
 }
