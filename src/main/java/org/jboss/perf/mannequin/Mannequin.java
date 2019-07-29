@@ -146,7 +146,7 @@ public class Mannequin extends AbstractVerticle {
                }
             }
          });
-      }).listen(NET_PORT, result->{
+      }).listen(NET_PORT, result -> {
          if (result.failed()){
             System.err.printf("Cannot listen on port %d%n",NET_PORT);
             vertx.close();
@@ -238,7 +238,8 @@ public class Mannequin extends AbstractVerticle {
       });
       netSocket.closeHandler(nil -> {
          pool.created--;
-         if (!ctx.response().closed()) {
+         log.trace("Connection {} closed, response sent? {}", netSocket.localAddress(), ctx.response().ended());
+         if (!ctx.response().ended() && !ctx.response().closed()) {
             ctx.response().setStatusCode(504).putHeader("x-db-closed", "true")
                   .end("TCP connection closed.");
          }
@@ -270,7 +271,7 @@ public class Mannequin extends AbstractVerticle {
          String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
          log.trace("{} Failed writing request", userAgent);
          // this can throw error when the connection is closed from the other party
-         if (!ctx.response().ended()) {
+         if (!ctx.response().ended() && !ctx.response().closed()) {
             ctx.response().setStatusCode(504).putHeader("x-db-write-failed", "true").end("TCP connection failed.");
          }
       }
@@ -318,7 +319,7 @@ public class Mannequin extends AbstractVerticle {
       try {
          p = Integer.parseInt(pStr);
          executeMersennePrime(p,result->{
-            if (ctx.response().closed()) {
+            if (ctx.response().ended() || ctx.response().closed()) {
                // connection has been closed before we calculated the result
                return;
             }
@@ -387,7 +388,7 @@ public class Mannequin extends AbstractVerticle {
                .setStatusMessage(result.result().statusMessage());
 
          executeMersennePrime(ctx, ignored -> {
-            if (!myResponse.closed()) {
+            if (!myResponse.ended() && !myResponse.closed()) {
                if (body != null) {
                   myResponse.end(body);
                } else {
