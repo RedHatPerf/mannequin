@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
@@ -76,8 +77,8 @@ public class Mannequin extends AbstractVerticle {
       http2Client = WebClient.create(vertx, new WebClientOptions(options).setProtocolVersion(HttpVersion.HTTP_2));
       tcpClient = vertx.createNetClient();
 
-      savedBuffer = Buffer.buffer(10000);
-      for(int i=0; i<10_000; i++) {
+      savedBuffer = Buffer.buffer(40_000);
+      for (int i = 0; i < 10_000; i++) {
          savedBuffer.appendInt(i);
       }
 
@@ -111,16 +112,38 @@ public class Mannequin extends AbstractVerticle {
             log.trace("Incoming connection from to {}", netSocket.remoteAddress());
             netSocket.closeHandler(nil -> log.trace("Connection from {} closed.", netSocket.remoteAddress()));
          }
-         netSocket.handler(buffer->{
+         AtomicReference<Buffer> queryHolder = new AtomicReference<>(Buffer.buffer());
+         netSocket.handler(buffer -> {
             if (trace) {
                log.trace("{} sent {} bytes", netSocket.remoteAddress(), buffer.length());
             }
-            int limit = buffer.length();
-            for (int i = 0; i < limit; i++){
-               netSocket.write(savedBuffer);
-            }
-            if (trace) {
-               log.trace("Responded to {}", netSocket.remoteAddress());
+            Buffer query = queryHolder.get();
+            query.appendBuffer(buffer);
+            if (query.length() >= 8) {
+               int querySize = query.getInt(0);
+               int responseSize = query.getInt(4);
+               for (int bytesToSend = responseSize; bytesToSend > 0; bytesToSend -= savedBuffer.length()){
+                  if (bytesToSend > savedBuffer.length()) {
+                     if (trace) {
+                        log.trace("Written full buffer");
+                     }
+                     netSocket.write(savedBuffer);
+                  } else {
+                     if (trace) {
+                        log.trace("Written {} bytes", bytesToSend);
+                     }
+                     netSocket.write(savedBuffer.slice(0, bytesToSend));
+                  }
+               }
+               if (trace) {
+                  log.trace("Responded {} bytes to {}", responseSize, netSocket.remoteAddress());
+               }
+               if (query.length() == querySize) {
+                  queryHolder.set(Buffer.buffer());
+               } else if (query.length() >= querySize) {
+                  log.warn("Request longer ({}) than expected ({})?", query.length(), querySize);
+                  queryHolder.set(query.slice(querySize, query.length()));
+               }
             }
          });
       }).listen(NET_PORT, result->{
@@ -168,7 +191,8 @@ public class Mannequin extends AbstractVerticle {
    }
 
    private void handleDb(RoutingContext ctx) {
-      int size = getInt("size", ctx, 10);
+      int querySize = getInt("querySize", ctx, 100);
+      int resultSize = getInt("resultSize", ctx, 1000);
       String host = getString("host", ctx, "localhost");
       int port = getInt("port", ctx, 5432);
       String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
@@ -179,7 +203,7 @@ public class Mannequin extends AbstractVerticle {
       long startTime = System.nanoTime();
       if (netSocket != null) {
          log.trace("{} Reusing connection {}", userAgent, netSocket.localAddress());
-         sendDbRequest(ctx, tcpConnectionPools.computeIfAbsent(authority, h -> new SimplePool()), size, startTime, netSocket);
+         sendDbRequest(ctx, tcpConnectionPools.computeIfAbsent(authority, h -> new SimplePool()), querySize, resultSize, startTime, netSocket);
       } else {
          pool.created++;
          tcpClient.connect(port, host, result -> {
@@ -196,20 +220,19 @@ public class Mannequin extends AbstractVerticle {
                log.trace("{} error", userAgent);
                netSocket2.close();
             });
-            sendDbRequest(ctx, pool, size, startTime, netSocket2);
+            sendDbRequest(ctx, pool, querySize, resultSize, startTime, netSocket2);
          });
       }
    }
 
-   private void sendDbRequest(RoutingContext ctx, SimplePool pool, int size, long startTime, NetSocket netSocket) {
+   private void sendDbRequest(RoutingContext ctx, SimplePool pool, int querySize, int resultSize, long startTime, NetSocket netSocket) {
       AtomicLong adder = new AtomicLong();
-      long expected = savedBuffer.length() * size;
       long timerId = vertx.setTimer(15_000, timer -> {
          String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
-         log.trace("{} timed out, {}/{} bytes", userAgent, adder.longValue(), expected);
+         log.trace("{} timed out, {}/{} bytes", userAgent, adder.longValue(), resultSize);
          if (!ctx.response().ended() && !ctx.response().closed()) {
             ctx.response().setStatusCode(504).putHeader("x-db-timeout", "true")
-                  .end("Received " + adder.longValue() + "/" + expected);
+                  .end("Received " + adder.longValue() + "/" + resultSize);
          }
          netSocket.close();
       });
@@ -222,8 +245,8 @@ public class Mannequin extends AbstractVerticle {
       });
       netSocket.handler(buffer -> {
          long total = adder.addAndGet(buffer.length());
-         log.trace("Received {} bytes ({} total) from TCP socket", buffer.length(), total);
-         if (total >= expected) {
+         log.trace("Received {} bytes ({}/{}) from TCP socket", buffer.length(), total, resultSize);
+         if (total >= resultSize) {
             long endTime = System.nanoTime();
             pool.connections.push(netSocket);
             String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
@@ -233,13 +256,16 @@ public class Mannequin extends AbstractVerticle {
                vertx.cancelTimer(timerId);
                log.trace("{} Completing request", userAgent);
                if (!ctx.response().ended() && !ctx.response().closed()) {
-                  ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":" + size + ",\"received\":" + adder.longValue() + "}");
+                  ctx.response().setStatusCode(HttpResponseStatus.OK.code()).end("{\"sent\":" + querySize + ",\"received\":" + adder.longValue() + "}");
                }
             });
          }
       });
       try {
-         netSocket.write(Buffer.buffer(new byte[size]));
+         Buffer requestBuffer = Buffer.buffer(new byte[Math.max(querySize, 8)]);
+         requestBuffer.setInt(0, querySize);
+         requestBuffer.setInt(4, resultSize);
+         netSocket.write(requestBuffer);
       } catch (Throwable t) {
          String userAgent = ctx.request().getHeader(HttpHeaderNames.USER_AGENT);
          log.trace("{} Failed writing request", userAgent);
