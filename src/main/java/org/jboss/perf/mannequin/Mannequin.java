@@ -303,9 +303,9 @@ public class Mannequin extends AbstractVerticle {
       response.setStatusCode(HttpResponseStatus.OK.code()).end(ctx.getBody());
    }
 
-   private void executeMersennePrime(int number, Consumer<String> callback){
+   private void executeMersennePrime(int number, boolean addSteps, Consumer<String> callback){
          inflight.increment();
-         vertx.executeBlocking(future -> future.complete(Computation.isMersennePrime(number)), false, result -> {
+         vertx.executeBlocking(future -> future.complete(Computation.isMersennePrime(number, addSteps)), false, result -> {
             inflight.decrement();
             if(callback != null) {
                callback.accept(String.valueOf(result.result()));
@@ -322,7 +322,7 @@ public class Mannequin extends AbstractVerticle {
       int p;
       try {
          p = Integer.parseInt(pStr);
-         executeMersennePrime(p, callback);
+         executeMersennePrime(p, false, callback);
       } catch (NumberFormatException e) {
          log.error("{} failed to parse parameter 'p': {}", ctx.request().uri(), pStr);
       }
@@ -330,15 +330,16 @@ public class Mannequin extends AbstractVerticle {
 
    private void handleMersennePrime(RoutingContext ctx) {
       String pStr = ctx.request().getParam("p");
+      String addSteps = ctx.request().getParam("addSteps");
       int p;
       try {
          p = Integer.parseInt(pStr);
-         executeMersennePrime(p,result->{
+         executeMersennePrime(p, "true".equalsIgnoreCase(addSteps), result->{
             if (ctx.response().ended() || ctx.response().closed()) {
                // connection has been closed before we calculated the result
                return;
             }
-            if (result != null && result.length()>0) {
+            if (result != null && result.length() > 0) {
                ctx.response().end(result);
             } else {
                ctx.response().setStatusCode(HttpResponseStatus.INTERNAL_SERVER_ERROR.code()).end();

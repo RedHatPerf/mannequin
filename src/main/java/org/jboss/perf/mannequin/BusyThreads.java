@@ -30,7 +30,7 @@ public class BusyThreads {
       ThreadLocalRandom random = ThreadLocalRandom.current();
       int add = 0;
       while (executors == myExecutors) {
-         add = Computation.isMersennePrime(random.nextInt(255) + add).getBoolean("result") ? 1 : 0;
+         add = Computation.isMersennePrime(random.nextInt(255) + add, false).getBoolean("result") ? 1 : 0;
       }
       return add;
    }

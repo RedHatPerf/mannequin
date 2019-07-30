@@ -10,7 +10,7 @@ public class Computation {
    private static final BigInteger MINUS_TWO = BigInteger.valueOf(-2);
 
    // See https://en.wikipedia.org/wiki/Lucas%E2%80%93Lehmer_primality_test
-   public static JsonObject isMersennePrime(int p) {
+   public static JsonObject isMersennePrime(int p, boolean addSteps) {
       JsonObjectBuilder objectBuilder = Json.createObjectBuilder();
       JsonArrayBuilder arrayBuilder = Json.createArrayBuilder();
       objectBuilder.add("input", p);
@@ -22,7 +22,9 @@ public class Computation {
       objectBuilder.add("M",M);
       for (int i = 0; i < p - 2; ++i) {
          s = s.multiply(s).add(MINUS_TWO).mod(M);
-         arrayBuilder.add(s.toString());
+         if (addSteps) {
+            arrayBuilder.add(s.toString());
+         }
       }
       //to ensure responses cannot be memoized
       objectBuilder.add("stopMillis", System.currentTimeMillis());
