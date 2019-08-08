@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: Template
+metadata:
+  creationTimestamp: null
+  name: mannequin
+parameters:
+- name: DOCKER_REGISTRY
+  description: "Local docker registry"
+  value: image-registry.openshift-image-registry.svc:5000
+- name: NAMESPACE
+  description: "Target namespace"
+  required: true
+objects:
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: ubi-quarkus-native-s2i
+  spec:
+    tags:
+    - from:
+        kind: DockerImage
+        name: quay.io/quarkus/ubi-quarkus-native-s2i:19.1.1
+      name: latest
+      referencePolicy:
+        type: Local
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: mannequin-builder
+  spec:
+    tags:
+    - from:
+        kind: DockerImage
+        name: ${DOCKER_REGISTRY}/${NAMESPACE}/mannequin-builder:latest
+      name: latest
+      referencePolicy:
+        type: Source
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: mannequin
+  spec:
+    tags:
+    - from:
+        kind: DockerImage
+        name: ${DOCKER_REGISTRY}/${NAMESPACE}/mannequin:latest
+      name: latest
+      referencePolicy:
+        type: Source
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    labels:
+      app: mannequin
+    name: mannequin-builder
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: mannequin-builder:latest
+    runPolicy: Serial
+    source:
+      git:
+        uri: https://github.com/RedHatPerf/mannequin
+        ref: quarkus
+      type: Git
+    strategy:
+      sourceStrategy:
+        from:
+          kind: ImageStreamTag
+          name: ubi-quarkus-native-s2i:latest
+      type: Source
+    triggers:
+      - type: ConfigChange
+      - imageChange:
+          from:
+            kind: ImageStreamTag
+            name: ubi-quarkus-native-s2i:latest
+        type: ImageChange
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    labels:
+      app: mannequin
+    name: mannequin
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: mannequin:latest
+    runPolicy: Serial
+    source:
+      dockerfile: |
+        FROM registry.access.redhat.com/ubi8/ubi-minimal:latest
+        ADD --chown=1001 /tmp/mannequin-1.0-SNAPSHOT-runner /mannequin
+        USER 1001
+        EXPOSE 8080/tcp 5432/tcp
+        ENTRYPOINT /mannequin
+      images:
+        - from:
+            kind: ImageStreamTag
+            name: mannequin-builder:latest
+          paths:
+            - sourcePath: /tmp/src/target/mannequin-1.0-SNAPSHOT-runner
+              destinationDir: tmp
+      type: Dockerfile
+    strategy:
+      dockerStrategy: {}
+      type: Docker
+    triggers:
+    - type: ConfigChange
+    - imageChange:
+        from:
+          kind: ImageStreamTag
+          name: mannequin-builder:latest
+      type: ImageChange
