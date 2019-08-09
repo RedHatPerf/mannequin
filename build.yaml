@@ -62,7 +62,6 @@ objects:
     source:
       git:
         uri: https://github.com/RedHatPerf/mannequin
-        ref: quarkus
       type: Git
     strategy:
       sourceStrategy:
