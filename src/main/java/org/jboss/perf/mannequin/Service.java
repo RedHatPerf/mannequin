@@ -2,6 +2,7 @@ package org.jboss.perf.mannequin;
 
 import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
+import io.vertx.core.Promise;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -34,6 +35,7 @@ import java.math.BigInteger;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
@@ -165,16 +167,21 @@ public class Service {
 
    @GET
    @Path("/batch")
-   public CompletionStage<JsonArray> batchMersennePrime(@QueryParam("host") String host,@QueryParam("port") int port,@QueryParam("p") List<Integer> p){
+   public CompletionStage<JsonArray> batchMersennePrime(
+         @QueryParam("host") String host,
+         @QueryParam("port") int port,
+         @QueryParam("p") List<Integer> p) {
       CompletableFuture<JsonArray> rtrn = new CompletableFuture<>();
       int clientPort = port == 0 ? 8080 : port;
       String clientHost = host == null || host.isEmpty() ? "localhost": host;
-      CompositeFuture.all(p.stream().map(number->{
-         Future f = Future.future();
+      ArrayList<Future> futures = new ArrayList<>();
+      for (int number : p) {
+         Promise promise = Promise.promise();
          http1xClient.get(clientPort, clientHost, "http://" + clientHost + ":" + clientPort + "/prime?p=" + number)
-         .send(f);
-         return f;
-      }).collect(Collectors.toList())).setHandler(asyncResult->{
+               .send(promise);
+         futures.add(promise.future());
+      }
+      CompositeFuture.all(futures).setHandler(asyncResult->{
          if(asyncResult.succeeded()){
             List list = asyncResult.result().list();
             JsonArray json = new JsonArray();
@@ -323,16 +330,15 @@ public class Service {
       WebClient httpClient = "http2".equals(version) ? http2Client : http1xClient;
       CompletableFuture<Response> future = new CompletableFuture<>();
       long startTime = System.nanoTime();
-      CompositeFuture.all(urls.stream().map(urlString -> {
-         try{
-            URL url = new URL(urlString);
-            return url;
+      ArrayList<Future> futures = new ArrayList<>();
+      for (String urlString : urls) {
+         URL url;
+         try {
+            url = new URL(urlString);
          } catch (MalformedURLException e){
             future.complete(Response.status(Response.Status.BAD_REQUEST.getStatusCode(), "Malformed URL: " + urlString).build());
-            return null;
+            break;
          }
-      }).filter(v -> v != null).map(url -> {
-         Future f = Future.future();
          HttpRequest<Buffer> request = httpClient.get(url.getPort() < 0 ? url.getDefaultPort() : url.getPort(), url.getHost(), url.getFile());
          for (Map.Entry<String, List<String>> entry : headers.getRequestHeaders().entrySet()) {
             String header = entry.getKey();
@@ -342,9 +348,11 @@ public class Service {
                }
             }
          }
-         request.send(f);
-         return f;
-      }).collect(Collectors.toList())).setHandler(asyncResult -> {
+         Promise promise = Promise.promise();
+         request.send(promise);
+         futures.add(promise.future());
+      }
+      CompositeFuture.all(futures).setHandler(asyncResult -> {
          if (asyncResult.succeeded()){
             long endTime = System.nanoTime();
             Response.ResponseBuilder responseBuilder;
