@@ -44,7 +44,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 
 @Path("/")
 public class Service {
@@ -52,30 +51,24 @@ public class Service {
    private static final boolean trace = log.isTraceEnabled();
 
    // HTTP port set by quarkus.http.port property
-   private static final int NET_PORT = Integer.getInteger("mannequin.netPort", 5432);
-   private static final String NAME;
    private static final BigInteger FOUR = BigInteger.valueOf(4);
    private static final BigInteger MINUS_ONE = BigInteger.valueOf(-1);
    private static final BigInteger MINUS_TWO = BigInteger.valueOf(-2);
    private static final String X_PROXIED_BY = "x-proxied-by";
    private static final String X_PROXY_SERVICE_TIME = "x-proxy-service-time";
    private static final String X_DB_SERVICE_TIME = "x-db-service-time";
-   private static final int MAX_CONNECTIONS = getIntFromEnv("MAX_CONNECTIONS", 20);
 
    @Inject
    Vertx vertx;
 
+   private String name;
+   private int netPort;
    private WebClient http1xClient;
    private WebClient http2Client;
    private NetClient tcpClient;
    private Map<String, SimplePool> tcpConnectionPools = new HashMap<>();
    private Buffer savedBuffer;
    private BusyThreads busyThreads = new BusyThreads();
-
-   static {
-      String name = System.getenv("NAME");
-      NAME = name == null ? "<unknown>" : name;
-   }
 
    private static int getIntFromEnv(String var, int def) {
       String env = System.getenv(var);
@@ -85,7 +78,8 @@ public class Service {
 
    @PostConstruct
    void initialize() {
-      WebClientOptions options = new WebClientOptions().setFollowRedirects(true).setMaxPoolSize(MAX_CONNECTIONS);
+      int maxConnections = getIntFromEnv("MAX_CONNECTIONS", 20);
+      WebClientOptions options = new WebClientOptions().setFollowRedirects(true).setMaxPoolSize(maxConnections);
       http1xClient = WebClient.create(vertx, new WebClientOptions(options).setProtocolVersion(HttpVersion.HTTP_1_1));
       http2Client = WebClient.create(vertx, new WebClientOptions(options).setProtocolVersion(HttpVersion.HTTP_2));
       tcpClient = vertx.createNetClient();
@@ -95,6 +89,7 @@ public class Service {
          savedBuffer.appendInt(i);
       }
 
+      netPort = Integer.getInteger("mannequin.netPort", 5432);
       vertx.createNetServer().connectHandler(netSocket -> {
          if (trace) {
             log.trace("Incoming connection from to {}", netSocket.remoteAddress());
@@ -136,9 +131,9 @@ public class Service {
                }
             }
          });
-      }).listen(NET_PORT, result->{
+      }).listen(netPort, result->{
          if (result.failed()){
-            System.err.printf("Cannot listen on port %d%n",NET_PORT);
+            System.err.printf("Cannot listen on port %d%n",netPort);
             vertx.close();
          } else {
             NetServer server = result.result();
@@ -162,7 +157,11 @@ public class Service {
    @GET
    @Path("/name")
    public String name(){
-      return NAME;
+      if (name == null) {
+         name = System.getenv("NAME");
+         name = name == null ? "<unknown>" : name;
+      }
+      return name;
    }
 
    @GET
@@ -227,7 +226,7 @@ public class Service {
          log.trace("Handling request from {}", userAgent);
       }
       if (port == 0) {
-         port = NET_PORT;
+         port = netPort;
       }
 
       String authority = host + ":" + port;
@@ -369,7 +368,7 @@ public class Service {
                });
                responseBuilder = Response.ok().entity(json);
             }
-            responseBuilder.header(X_PROXIED_BY, NAME)
+            responseBuilder.header(X_PROXIED_BY, name())
                   .header(X_PROXY_SERVICE_TIME, String.valueOf(endTime - startTime));
             if (p <= 0) {
                future.complete(responseBuilder.build());
