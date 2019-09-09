@@ -6,8 +6,6 @@ import io.vertx.core.Promise;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.logging.Logger;
-import io.vertx.core.logging.LoggerFactory;
 import io.vertx.ext.web.client.WebClientOptions;
 import io.vertx.reactivex.core.Vertx;
 import io.vertx.reactivex.core.buffer.Buffer;
@@ -45,9 +43,11 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.jboss.logging.Logger;
+
 @Path("/")
 public class Service {
-   private static final Logger log = LoggerFactory.getLogger(Service.class);
+   private static final Logger log = Logger.getLogger(Service.class);
    private static final boolean trace = log.isTraceEnabled();
 
    // HTTP port set by quarkus.http.port property
@@ -92,13 +92,13 @@ public class Service {
       netPort = Integer.getInteger("mannequin.netPort", 5432);
       vertx.createNetServer().connectHandler(netSocket -> {
          if (trace) {
-            log.trace("Incoming connection from to {}", netSocket.remoteAddress());
-            netSocket.closeHandler(nil -> log.trace("Connection from {} closed.", netSocket.remoteAddress()));
+            log.tracef("Incoming connection from to %s", netSocket.remoteAddress());
+            netSocket.closeHandler(nil -> log.tracef("Connection from %s closed.", netSocket.remoteAddress()));
          }
          AtomicReference<Buffer> queryHolder = new AtomicReference<>(Buffer.buffer());
          netSocket.handler(buffer -> {
             if (trace) {
-               log.trace("{} sent {} bytes", netSocket.remoteAddress(), buffer.length());
+               log.tracef("%s sent %d bytes", netSocket.remoteAddress(), buffer.length());
             }
             Buffer query = queryHolder.get();
             query.appendBuffer(buffer);
@@ -109,23 +109,23 @@ public class Service {
                   for (int bytesToSend = responseSize; bytesToSend > 0; bytesToSend -= savedBuffer.length()) {
                      if (bytesToSend > savedBuffer.length()) {
                         if (trace) {
-                           log.trace("Written full buffer");
+                           log.tracef("Written full buffer");
                         }
                         netSocket.write(savedBuffer);
                      } else {
                         if (trace) {
-                           log.trace("Written {} bytes", bytesToSend);
+                           log.tracef("Written %d bytes", bytesToSend);
                         }
                         netSocket.write(savedBuffer.slice(0, bytesToSend));
                      }
                   }
                   if (trace) {
-                     log.trace("Responded {} bytes to {}", responseSize, netSocket.remoteAddress());
+                     log.tracef("Responded %d bytes to %s", responseSize, netSocket.remoteAddress());
                   }
                   if (query.length() == querySize) {
                      queryHolder.set(Buffer.buffer());
                   } else {
-                     log.warn("Request longer ({}) than expected ({})?", query.length(), querySize);
+                     log.warnf("Request longer (%d) than expected (%d)?", query.length(), querySize);
                      queryHolder.set(query.slice(querySize, query.length()));
                   }
                }
@@ -223,7 +223,7 @@ public class Service {
       CompletableFuture<Response> future = new CompletableFuture<>();
       if (trace) {
          // TODO: log remote IP - how?
-         log.trace("Handling request from {}", userAgent);
+         log.tracef("Handling request from %s", userAgent);
       }
       if (port == 0) {
          port = netPort;
@@ -234,22 +234,22 @@ public class Service {
       NetSocket netSocket = pool.connections.poll();
       long startTime = System.nanoTime();
       if (netSocket != null) {
-         log.trace("{} Reusing connection {}", userAgent, netSocket.localAddress());
+         log.tracef("%s Reusing connection %s", userAgent, netSocket.localAddress());
          sendDbRequest(userAgent, tcpConnectionPools.computeIfAbsent(authority, h -> new SimplePool()), querySize, resultSize, startTime, netSocket, p, future);
       } else {
          pool.created++;
          tcpClient.connect(port, host, result -> {
             if (result.failed()) {
-               log.trace("{} Connection failed", result.cause(), userAgent);
+               log.tracef("%s Connection failed", result.cause(), userAgent);
                if (!future.isDone()) {
                   future.complete(Response.status(504).entity(result.cause().toString()).build());
                }
                return;
             }
-            log.trace("{} Connection succeeded", userAgent);
+            log.tracef("%s Connection succeeded", userAgent);
             NetSocket netSocket2 = result.result();
             netSocket2.exceptionHandler(t -> {
-               log.trace("{} error", userAgent);
+               log.tracef("%s error", userAgent);
                netSocket2.close();
             });
             sendDbRequest(userAgent, pool, querySize, resultSize, startTime, netSocket2, p, future);
@@ -261,10 +261,10 @@ public class Service {
    private void sendDbRequest(String userAgent, SimplePool pool, int querySize, int resultSize, long startTime, NetSocket netSocket, int p, CompletableFuture<Response> future) {
       AtomicLong adder = new AtomicLong();
       if (trace) {
-         log.trace("{} Got request {} -> {}, using {}", userAgent, querySize, resultSize, netSocket.localAddress());
+         log.tracef("%s Got request %d -> %d, using %s", userAgent, querySize, resultSize, netSocket.localAddress());
       }
       long timerId = vertx.setTimer(15_000, timer -> {
-         log.trace("{} timed out, {}/{} bytes", userAgent, adder.longValue(), resultSize);
+         log.tracef("%s timed out, %d/%d bytes", userAgent, adder.longValue(), resultSize);
          if (!future.isDone()) {
             future.complete(Response.status(504).header("x-db-timeout", "true")
                   .entity("Received " + adder.longValue() + "/" + resultSize).build());
@@ -273,7 +273,7 @@ public class Service {
       });
       netSocket.closeHandler(nil -> {
          pool.created--;
-         log.trace("Connection {} closed, response sent? {}", netSocket.localAddress(), future.isDone());
+         log.tracef("Connection %s closed, response sent? %s", netSocket.localAddress(), future.isDone());
          if (!future.isDone()) {
             future.complete(Response.status(504).header("x-db-closed", "true").entity("TCP connection closed.").build());
          }
@@ -281,19 +281,19 @@ public class Service {
       netSocket.handler(buffer -> {
          long total = adder.addAndGet(buffer.length());
          if (trace) {
-            log.trace("{} Received {} bytes ({}/{}) from TCP socket", userAgent, buffer.length(), total, resultSize);
+            log.tracef("%s Received %d bytes (%d/%d) from TCP socket", userAgent, buffer.length(), total, resultSize);
          }
          if (total >= resultSize) {
             long endTime = System.nanoTime();
             pool.connections.push(netSocket);
             if (trace) {
-               log.trace("{} Released connection {} , {}/{} available", userAgent, netSocket.localAddress(), pool.connections.size(), pool.created);
+               log.tracef("%s Released connection %s , %d/%d available", userAgent, netSocket.localAddress(), pool.connections.size(), pool.created);
             }
             long dbServiceTime = endTime - startTime;
             vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)), ignored -> {
                vertx.cancelTimer(timerId);
                if (trace) {
-                  log.trace("{} Completing request", userAgent);
+                  log.tracef("%s Completing request", userAgent);
                }
                if (!future.isDone()) {
                   future.complete(Response.ok("{\"sent\":" + querySize + ",\"received\":" + adder.longValue() + "}")
@@ -308,7 +308,7 @@ public class Service {
          requestBuffer.setInt(4, resultSize);
          netSocket.write(requestBuffer);
       } catch (Throwable t) {
-         log.trace("{} Failed writing request", userAgent);
+         log.tracef("%s Failed writing request", userAgent);
          // this can throw error when the connection is closed from the other party
          if (!future.isDone()) {
             future.complete(Response.status(504).header("x-db-write-failed", "true").entity("TCP connection failed.").build());
