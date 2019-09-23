@@ -15,4 +15,5 @@ fi
 
 echo "---> Building application from source..."
 cd /tmp/src
+mvn install
 mvn install -Dnative
