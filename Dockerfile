@@ -1,8 +1,9 @@
-FROM openjdk:8-jre-alpine
-WORKDIR /work
-RUN chmod 777 /work
-COPY ./target/mannequin-0.1-SNAPSHOT-fat.jar /work/application.jar
-EXPOSE 8080 5432
-ENV JAVA_OPTS "$JAVA_OPTS -Djava.net.preferIPv4Stack=true -Xmx64m"
-ENTRYPOINT java ${JAVA_OPTS} -cp /work/application -jar /work/application.jar
+FROM registry.access.redhat.com/ubi8/ubi:latest
+ADD target/mannequin-1.0-SNAPSHOT-runner /mannequin
+ADD target/mannequin-1.0-SNAPSHOT-runner.debug /tmp/mannequin
+#RUN yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
+RUN chown 1001 /mannequin
+USER 1001
+EXPOSE 8080/tcp 5432/tcp
+ENTRYPOINT [ "/mannequin" ]
 
