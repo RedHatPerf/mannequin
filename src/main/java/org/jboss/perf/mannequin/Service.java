@@ -331,6 +331,7 @@ public class Service {
       long startTime = System.nanoTime();
       ArrayList<Future> futures = new ArrayList<>();
       for (String urlString : urls) {
+         log.tracef("Proxying request to %s", urlString);
          URL url;
          try {
             url = new URL(urlString);
@@ -358,10 +359,12 @@ public class Service {
             List<HttpResponse> list = asyncResult.result().list();
             if (list.size() == 1){
                HttpResponse httpResponse = list.get(0);
+               log.tracef("Received response proxied invocation, status is %d", httpResponse.statusCode());
                responseBuilder = Response.status(httpResponse.statusCode(), httpResponse.statusMessage());
                httpResponse.headers().forEach(entry -> responseBuilder.header(entry.getKey(), entry.getValue()));
                responseBuilder.entity(httpResponse.bodyAsBuffer().getBytes());
             } else {
+               log.trace("Received response for all proxied invocations");
                JsonArray json = new JsonArray();
                asyncResult.result().<HttpResponse>list().forEach(httpResponse -> {
                   json.add(httpResponse.bodyAsString());
@@ -373,10 +376,12 @@ public class Service {
             if (p <= 0) {
                future.complete(responseBuilder.build());
             } else {
+               log.trace("Delaying response (burning CPU)");
                vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)),
                      result -> future.complete(responseBuilder.build()));
             }
          } else {
+            log.trace("Proxy invocation failed", asyncResult.cause());
             future.complete(Response.serverError().entity(asyncResult.cause()).build());
          }
       });
