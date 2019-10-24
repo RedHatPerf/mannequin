@@ -29,17 +29,17 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.Response;
 
-import java.math.BigInteger;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -51,9 +51,6 @@ public class Service {
    private static final boolean trace = log.isTraceEnabled();
 
    // HTTP port set by quarkus.http.port property
-   private static final BigInteger FOUR = BigInteger.valueOf(4);
-   private static final BigInteger MINUS_ONE = BigInteger.valueOf(-1);
-   private static final BigInteger MINUS_TWO = BigInteger.valueOf(-2);
    private static final String X_PROXIED_BY = "x-proxied-by";
    private static final String X_PROXY_SERVICE_TIME = "x-proxy-service-time";
    private static final String X_DB_SERVICE_TIME = "x-db-service-time";
@@ -66,7 +63,7 @@ public class Service {
    private WebClient http1xClient;
    private WebClient http2Client;
    private NetClient tcpClient;
-   private Map<String, SimplePool> tcpConnectionPools = new HashMap<>();
+   private ConcurrentMap<String, SimplePool> tcpConnectionPools = new ConcurrentHashMap<>();
    private Buffer savedBuffer;
    private BusyThreads busyThreads = new BusyThreads();
 
@@ -231,13 +228,18 @@ public class Service {
 
       String authority = host + ":" + port;
       SimplePool pool = tcpConnectionPools.computeIfAbsent(authority, a -> new SimplePool());
-      NetSocket netSocket = pool.connections.poll();
+      NetSocket netSocket;
+      synchronized (pool) {
+         netSocket = pool.connections.poll();
+         if (netSocket == null) {
+            pool.created++;
+         }
+      }
       long startTime = System.nanoTime();
       if (netSocket != null) {
          log.tracef("%s Reusing connection %s", userAgent, netSocket.localAddress());
-         sendDbRequest(userAgent, tcpConnectionPools.computeIfAbsent(authority, h -> new SimplePool()), querySize, resultSize, startTime, netSocket, p, future);
+         sendDbRequest(userAgent, pool, querySize, resultSize, startTime, netSocket, p, future);
       } else {
-         pool.created++;
          tcpClient.connect(port, host, result -> {
             if (result.failed()) {
                log.tracef("%s Connection failed", result.cause(), userAgent);
@@ -272,7 +274,9 @@ public class Service {
          netSocket.close();
       });
       netSocket.closeHandler(nil -> {
-         pool.created--;
+         synchronized (pool) {
+            pool.created--;
+         }
          log.tracef("Connection %s closed, response sent? %s", netSocket.localAddress(), future.isDone());
          if (!future.isDone()) {
             future.complete(Response.status(504).header("x-db-closed", "true").entity("TCP connection closed.").build());
@@ -285,9 +289,14 @@ public class Service {
          }
          if (total >= resultSize) {
             long endTime = System.nanoTime();
-            pool.connections.push(netSocket);
+            int poolSize, poolCreated;
+            synchronized (pool) {
+               pool.connections.push(netSocket);
+               poolSize = pool.connections.size();
+               poolCreated = pool.created;
+            }
             if (trace) {
-               log.tracef("%s Released connection %s , %d/%d available", userAgent, netSocket.localAddress(), pool.connections.size(), pool.created);
+               log.tracef("%s Released connection %s , %d/%d available", userAgent, netSocket.localAddress(), poolSize, poolCreated);
             }
             long dbServiceTime = endTime - startTime;
             vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)), ignored -> {
