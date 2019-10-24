@@ -10,9 +10,9 @@
     <surefire-plugin.version>2.22.0</surefire-plugin.version>
     <maven.compiler.target>1.8</maven.compiler.target>
     <maven.compiler.source>1.8</maven.compiler.source>
-    <quarkus.version>0.23.1</quarkus.version>
+    <quarkus.version>0.26.1</quarkus.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <vertx.version>3.8.1</vertx.version>
+    <vertx.version>3.8.3</vertx.version>
   </properties>
 
   <dependencyManagement>
@@ -104,12 +104,6 @@
                 <configuration>
                   <enableHttpUrlHandler>true</enableHttpUrlHandler>
 <!--                  <debugSymbols>true</debugSymbols>-->
-                  <!-- These extra args are workaround for https://github.com/quarkusio/quarkus/issues/4241 -->
-                  <additionalBuildArgs>
-                    <param>--initialize-at-run-time=io.netty.util.concurrent.ScheduledFutureTask</param>
-                    <param>--initialize-at-run-time=io.netty.util.concurrent.GlobalEventExecutor</param>
-                    <param>--initialize-at-run-time=io.netty.util.concurrent.ImmediateEventExecutor</param>
-                  </additionalBuildArgs>
                 </configuration>
               </execution>
             </executions>
