@@ -17,6 +17,7 @@ import io.vertx.reactivex.ext.web.client.HttpResponse;
 import io.vertx.reactivex.ext.web.client.WebClient;
 
 import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
 import javax.inject.Inject;
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
@@ -132,13 +133,22 @@ public class Service {
          });
       }).listen(netPort, result->{
          if (result.failed()){
-            System.err.printf("Cannot listen on port %d%n",netPort);
+            log.errorf("Cannot listen on port %d", netPort);
             vertx.close();
+            System.exit(1);
          } else {
             NetServer server = result.result();
-            System.out.printf("Mannequin net server listening on port %d%n",server.actualPort());
+            log.infof("Mannequin net server listening on port %d%n", server.actualPort());
          }
       });
+   }
+
+   @PreDestroy
+   public void destroy() {
+      http1xClient.close();
+      http2Client.close();
+      tcpClient.close();
+      vertx.close();
    }
 
    @GET
@@ -202,7 +212,7 @@ public class Service {
                                    @QueryParam("addSteps") @DefaultValue("false") boolean addSteps){
       CompletableFuture<Response> future = new CompletableFuture<>();
       long computeStart = System.nanoTime();
-      vertx.<JsonObject>executeBlocking(f -> f.complete(Computation.isMersennePrime(p, addSteps)), result -> {
+      vertx.<JsonObject>executeBlocking(f -> f.complete(Computation.isMersennePrime(p, addSteps)), false, result -> {
          if (result.succeeded()) {
             Response.ResponseBuilder responseBuilder = Response.ok(result.result())
                   .header(X_COMPUTE_TIME, String.valueOf(System.nanoTime() - computeStart));
@@ -305,7 +315,7 @@ public class Service {
             }
             long dbServiceTime = endTime - startTime;
             long computeStart = System.nanoTime();
-            vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)), ignored -> {
+            vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)), false, ignored -> {
                long computeEnd = System.nanoTime();
                vertx.cancelTimer(timerId);
                if (trace) {
@@ -367,9 +377,15 @@ public class Service {
                }
             }
          }
-         Promise promise = Promise.promise();
-         request.send(promise);
-         futures.add(promise.future());
+         try {
+            Promise promise = Promise.promise();
+            request.send(promise);
+            futures.add(promise.future());
+         } catch (Throwable t) {
+            log.error("Failed to send the request", t);
+            future.complete(Response.serverError().build());
+            return future;
+         }
       }
       CompositeFuture.all(futures).setHandler(asyncResult -> {
          if (asyncResult.succeeded()){
@@ -406,7 +422,7 @@ public class Service {
                future.complete(responseBuilder.build());
             } else {
                long computeStart = System.nanoTime();
-               vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)),
+               vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)), false,
                      result -> {
                         responseBuilder.header(X_PROXY_COMPUTE_TIME, String.valueOf(System.nanoTime() - computeStart));
                         future.complete(responseBuilder.build());
