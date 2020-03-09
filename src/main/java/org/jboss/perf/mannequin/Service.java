@@ -54,6 +54,8 @@ public class Service {
    private static final String X_PROXIED_BY = "x-proxied-by";
    private static final String X_PROXY_SERVICE_TIME = "x-proxy-service-time";
    private static final String X_DB_SERVICE_TIME = "x-db-service-time";
+   private static final String X_COMPUTE_TIME = "x-compute-time";
+   private static final String X_PROXY_COMPUTE_TIME = "x-proxy-compute-time";
 
    @Inject
    Vertx vertx;
@@ -196,12 +198,15 @@ public class Service {
 
    @GET
    @Path("/mersennePrime")
-   public CompletionStage<JsonObject> mersennePrime(@QueryParam("p") int p,
+   public CompletionStage<Response> mersennePrime(@QueryParam("p") int p,
                                    @QueryParam("addSteps") @DefaultValue("false") boolean addSteps){
-      CompletableFuture<JsonObject> future = new CompletableFuture<>();
+      CompletableFuture<Response> future = new CompletableFuture<>();
+      long computeStart = System.nanoTime();
       vertx.<JsonObject>executeBlocking(f -> f.complete(Computation.isMersennePrime(p, addSteps)), result -> {
          if (result.succeeded()) {
-            future.complete(result.result());
+            Response.ResponseBuilder responseBuilder = Response.ok(result.result())
+                  .header(X_COMPUTE_TIME, String.valueOf(System.nanoTime() - computeStart));
+            future.complete(responseBuilder.build());
          } else {
             future.completeExceptionally(result.cause());
          }
@@ -299,14 +304,17 @@ public class Service {
                log.tracef("%s Released connection %s , %d/%d available", userAgent, netSocket.localAddress(), poolSize, poolCreated);
             }
             long dbServiceTime = endTime - startTime;
+            long computeStart = System.nanoTime();
             vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)), ignored -> {
+               long computeEnd = System.nanoTime();
                vertx.cancelTimer(timerId);
                if (trace) {
                   log.tracef("%s Completing request", userAgent);
                }
                if (!future.isDone()) {
                   future.complete(Response.ok("{\"sent\":" + querySize + ",\"received\":" + adder.longValue() + "}")
-                        .header(X_DB_SERVICE_TIME, String.valueOf(dbServiceTime)).build());
+                        .header(X_DB_SERVICE_TIME, String.valueOf(dbServiceTime))
+                        .header(X_COMPUTE_TIME, String.valueOf(computeEnd - computeStart)).build());
                }
             });
          }
@@ -397,8 +405,12 @@ public class Service {
             if (p <= 0) {
                future.complete(responseBuilder.build());
             } else {
+               long computeStart = System.nanoTime();
                vertx.executeBlocking(f -> f.complete(Computation.isMersennePrime(p, false)),
-                     result -> future.complete(responseBuilder.build()));
+                     result -> {
+                        responseBuilder.header(X_PROXY_COMPUTE_TIME, String.valueOf(System.nanoTime() - computeStart));
+                        future.complete(responseBuilder.build());
+                     });
             }
          } else {
             log.trace("Proxy invocation failed", asyncResult.cause());
